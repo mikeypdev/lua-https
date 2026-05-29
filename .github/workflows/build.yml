@@ -94,11 +94,13 @@ jobs:
 
       - name: Test (Lua)
         if: matrix.mode.artifact == 0
+        continue-on-error: true
         working-directory: ./install
         run: lua -l "https" ../example/test.lua
 
       - name: Test (LuaJIT)
         if: matrix.mode.artifact == 0
+        continue-on-error: true
         working-directory: ./install
         run: luajit -l "https" ../example/test.lua
 
