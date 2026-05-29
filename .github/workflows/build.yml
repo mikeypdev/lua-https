@@ -1,21 +1,31 @@
 name: "Build & Test"
+
 on: [push, pull_request]
 
-jobs:    
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
   macOS:
-    runs-on: macos-latest
+    runs-on: macos-14
     timeout-minutes: 30
     env:
       MACOSX_DEPLOYMENT_TARGET: "10.9"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Download LuaJIT
+
+      - name: Checkout LuaJIT
         uses: actions/checkout@v4
         with:
           repository: LuaJIT/LuaJIT
           ref: v2.1
           path: LuaJIT
+
       - name: Compile universal LuaJIT
         working-directory: ./LuaJIT
         run: |
@@ -31,15 +41,19 @@ jobs:
 
           lipo -create -output ./src/libluajit.dylib ./src/libluajit_x64.dylib ./src/libluajit_arm.dylib
           lipo -create -output ./src/luajit ./src/luajit_x64 ./src/luajit_arm
+
       - name: Configure
         run: cmake -Bbuild -S. -G Xcode -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" -DLUA_INCLUDE_DIR=$PWD/LuaJIT/src -DLUA_LIBRARIES=$PWD/LuaJIT/src/lua
+
       - name: Build
         working-directory: build
         run: xcodebuild -configuration Release -scheme https -destination generic/platform=macOS
+
       - name: Test
         working-directory: ./build/src/Release
         run: ../../../LuaJIT/src/luajit -l "https" ../../../example/test.lua
-      - name: Artifact
+
+      - name: Upload Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -48,43 +62,47 @@ jobs:
 
   Linux:
     name: ${{ matrix.mode.name }}
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 30
     strategy:
       matrix:
         mode:
-        - name: Linux cURL
-          curl: 1
-          openssl: 0
-          artifact: 0
-        - name: Linux OpenSSL
-          curl: 0
-          openssl: 1
-          artifact: 0
-        - name: Linux cURL & OpenSSL
-          curl: 1
-          openssl: 1
-          artifact: 1
+          - name: Linux cURL
+            curl: 1
+            openssl: 0
+            artifact: 0
+          - name: Linux OpenSSL
+            curl: 0
+            openssl: 1
+            artifact: 0
+          - name: Linux cURL & OpenSSL
+            curl: 1
+            openssl: 1
+            artifact: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Update APT Repository
-        run: sudo apt-get update
+
       - name: Install Dependencies
-        run: sudo apt-get install -y lua5.1 luajit liblua5.1-0-dev libcurl4-openssl-dev g++ libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y lua5.1 luajit liblua5.1-0-dev libcurl4-openssl-dev g++ libssl-dev
+
       - name: Configure
         run: cmake -Bbuild -S. -DCMAKE_INSTALL_PREFIX=$PWD/install -DCMAKE_BUILD_TYPE=Release -DUSE_CURL_BACKEND=${{ matrix.mode.curl }} -DUSE_OPENSSL_BACKEND=${{ matrix.mode.openssl }}
+
       - name: Build
         run: cmake --build build --config Release --target install -j$(nproc)
+
       - name: Test (Lua)
         if: matrix.mode.artifact == 0
         working-directory: ./install
         run: lua -l "https" ../example/test.lua
+
       - name: Test (LuaJIT)
         if: matrix.mode.artifact == 0
         working-directory: ./install
         run: luajit -l "https" ../example/test.lua
-      - name: Artifact
+
+      - name: Upload Artifact
         if: matrix.mode.artifact == 1
         uses: actions/upload-artifact@v4
         with:
@@ -92,41 +110,48 @@ jobs:
           path: install/https.so
 
   Windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       matrix:
         arch:
-        - Win32
-        - x64
+          - Win32
+          - x64
     defaults:
       run:
         shell: cmd
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-    - name: Download LuaJIT
-      uses: actions/checkout@v4
-      with:
-        repository: LuaJIT/LuaJIT
-        ref: v2.1
-        path: LuaJIT
-    - name: Configure MSVC Developer Command Prompt
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        arch: ${{ matrix.arch }}
-    - name: Compile LuaJIT
-      working-directory: ./LuaJIT/src
-      run: msvcbuild.bat amalg
-    - name: Configure
-      run: cmake -Bbuild -S. -DCMAKE_INSTALL_PREFIX=%CD%\install -A ${{ matrix.arch }} -DLUA_INCLUDE_DIR=%CD%\LuaJIT\src -DLUA_LIBRARIES=%CD%\LuaJIT\src\lua51.lib
-    - name: Build
-      run: cmake --build build --config Release --target install
-    - name: Test
-      working-directory: ./install
-      run: ..\LuaJIT\src\luajit ..\example\test.lua
-    - name: Artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: https-windows-${{ matrix.arch }}.zip
-        path: install/https.dll
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout LuaJIT
+        uses: actions/checkout@v4
+        with:
+          repository: LuaJIT/LuaJIT
+          ref: v2.1
+          path: LuaJIT
+
+      - name: Configure MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+
+      - name: Compile LuaJIT
+        working-directory: ./LuaJIT/src
+        run: msvcbuild.bat amalg
+
+      - name: Configure
+        run: cmake -Bbuild -S. -DCMAKE_INSTALL_PREFIX=%CD%\install -A ${{ matrix.arch }} -DLUA_INCLUDE_DIR=%CD%\LuaJIT\src -DLUA_LIBRARIES=%CD%\LuaJIT\src\lua51.lib
+
+      - name: Build
+        run: cmake --build build --config Release --target install
+
+      - name: Test
+        working-directory: ./install
+        run: ..\LuaJIT\src\luajit ..\example\test.lua
+
+      - name: Upload Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: https-windows-${{ matrix.arch }}.zip
+          path: install/https.dll
